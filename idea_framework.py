@@ -25,6 +25,7 @@ APP_DIR = Path(__file__).resolve().parent
 DEFAULT_STORE = APP_DIR / "ideas.jsonl"
 DEFAULT_MARKDOWN = APP_DIR / "framework.md"
 DEFAULT_META = APP_DIR / "idea_framework_meta.json"
+DEFAULT_OBSIDIAN = APP_DIR / "obsidian_export"
 FIELD_ORDER = ("summary", "innovation", "mechanism", "scene", "validation", "risk")
 FIELD_LABELS = {
     "summary": "一句话想法",
@@ -46,6 +47,29 @@ STOP_WORDS = {
     "可以", "通过", "根据", "进行", "实现", "一个", "这个", "用户", "系统", "功能", "方案",
     "我们", "以及", "能够", "需要", "使用", "对于", "相关", "提高", "建立", "提供", "支持",
 }
+
+KNOWLEDGE_TYPES = ("事实", "假设", "推论", "经验", "未知问题")
+THINKING_MODES = ("第一性原理", "系统性思维", "过程思维", "反向思维", "默会知识", "高杠杆思考")
+RELATION_TYPES = ("包含", "因果", "依赖", "对比", "时序", "反馈", "证据", "风险", "行动")
+TOOL_LAYERS = ("OneNote原始捕捉层", "Obsidian知识沉淀层", "思维导图表达层")
+CONFIDENCE_LEVELS = ("高", "中", "低", "待验证")
+REPORT_SECTIONS = (
+    (1, "一句话核心结论"),
+    (2, "主题的系统边界"),
+    (3, "第一性原理拆解"),
+    (4, "可检查的分析步骤"),
+    (5, "失败模式与预警信号"),
+    (6, "专家默会知识"),
+    (7, "第一序、第二序和第三序效应"),
+    (8, "OneNote原始记录清单"),
+    (9, "Obsidian永久笔记清单"),
+    (10, "Obsidian属性字段建议"),
+    (11, "推荐建立的双向链接"),
+    (12, "缩进式思维导图"),
+    (13, "Mermaid思维导图代码"),
+    (14, "三个最高杠杆的行动"),
+    (15, "一个最小可执行的下一步"),
+)
 
 
 def now_iso() -> str:
@@ -81,6 +105,15 @@ class Idea:
     scene: str = ""
     validation: str = ""
     risk: str = ""
+    knowledge_type: str = "未知问题"
+    thinking_mode: str = "过程思维"
+    relation_type: str = "包含"
+    tool_layer: str = "OneNote原始捕捉层"
+    source: str = ""
+    evidence: str = ""
+    confidence: str = "待验证"
+    next_action: str = ""
+    links: list[str] = field(default_factory=list)
     updated_at: str = ""
 
     @classmethod
@@ -100,6 +133,15 @@ class Idea:
             scene=clean_text(record.get("scene")),
             validation=clean_text(record.get("validation")),
             risk=clean_text(record.get("risk")),
+            knowledge_type=clean_text(record.get("knowledge_type")) or "未知问题",
+            thinking_mode=clean_text(record.get("thinking_mode")) or "过程思维",
+            relation_type=clean_text(record.get("relation_type")) or "包含",
+            tool_layer=clean_text(record.get("tool_layer")) or "OneNote原始捕捉层",
+            source=clean_text(record.get("source")),
+            evidence=clean_text(record.get("evidence")),
+            confidence=clean_text(record.get("confidence")) or "待验证",
+            next_action=clean_text(record.get("next_action")),
+            links=normalize_tags(record.get("links")),
             updated_at=clean_text(record.get("updated_at")),
         )
 
@@ -111,7 +153,11 @@ class Idea:
         return [(key, clean_text(getattr(self, key))) for key in FIELD_ORDER if clean_text(getattr(self, key))]
 
     def searchable_text(self) -> str:
-        return " ".join([self.title, *self.tags, *(text for _, text in self.field_items())])
+        return " ".join([
+            self.title, *self.tags, self.knowledge_type, self.thinking_mode,
+            self.relation_type, self.tool_layer, self.source, self.evidence,
+            self.next_action, *self.links, *(text for _, text in self.field_items()),
+        ])
 
     def preview(self, limit: int = 84) -> str:
         text = clean_text(self.summary or self.innovation or self.title)
@@ -135,6 +181,15 @@ def new_idea(**values: Any) -> Idea:
         scene=clean_text(values.get("scene")),
         validation=clean_text(values.get("validation")),
         risk=clean_text(values.get("risk")),
+        knowledge_type=clean_text(values.get("knowledge_type")) or "未知问题",
+        thinking_mode=clean_text(values.get("thinking_mode")) or "过程思维",
+        relation_type=clean_text(values.get("relation_type")) or "包含",
+        tool_layer=clean_text(values.get("tool_layer")) or "OneNote原始捕捉层",
+        source=clean_text(values.get("source")),
+        evidence=clean_text(values.get("evidence")),
+        confidence=clean_text(values.get("confidence")) or "待验证",
+        next_action=clean_text(values.get("next_action")),
+        links=normalize_tags(values.get("links")),
     )
 
 
@@ -165,7 +220,14 @@ def save_ideas(ideas: Iterable[Idea], path: Path = DEFAULT_STORE) -> None:
 
 
 def load_meta(path: Path = DEFAULT_META) -> dict[str, Any]:
-    defaults: dict[str, Any] = {"trunk_names": {}, "idea_assignments": {}, "pinned_ids": []}
+    defaults: dict[str, Any] = {
+        "trunk_names": {},
+        "idea_assignments": {},
+        "pinned_ids": [],
+        "capture_draft": {},
+        "excluded_report_sections": [],
+        "report_exclusions": [],
+    }
     if not path.exists():
         return defaults
     try:
@@ -184,7 +246,9 @@ def load_meta(path: Path = DEFAULT_META) -> dict[str, Any]:
 
 def save_meta(meta: dict[str, Any], path: Path = DEFAULT_META) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
 
 
 def tokens(text: str) -> set[str]:
@@ -298,57 +362,248 @@ def topic_for_idea(idea_id: str, components: list[list[Idea]], names: dict[str, 
     return "未归类"
 
 
+def _topic_title(ideas: list[Idea], names: dict[str, str] | None = None) -> str:
+    if not ideas:
+        return "待定义主题"
+    components = automatic_components(ideas, 0.18)
+    if len(components) == 1:
+        return topic_name(components[0], names)
+    pinned_name = clean_text(next(iter((names or {}).values()), ""))
+    return pinned_name or ideas[-1].title
+
+
+def _idea_text(idea: Idea) -> str:
+    return clean_text(idea.summary or idea.mechanism or idea.innovation or idea.title)
+
+
+def _marked(idea: Idea, text: str | None = None) -> str:
+    content = clean_text(text or _idea_text(idea)) or "待补充"
+    verification = "【待验证】" if idea.knowledge_type in {"假设", "推论", "未知问题"} or idea.confidence in {"低", "待验证"} else ""
+    source = f"；证据：{idea.evidence or idea.source}" if idea.evidence or idea.source else ""
+    return f"[{idea.relation_type}] {content}{verification}{source}（{idea.id}）"
+
+
+def _items_or_pending(items: list[str], pending: str = "待验证：尚无记录。") -> list[str]:
+    return items or [pending]
+
+
+def _append_bullets(lines: list[str], items: list[str]) -> None:
+    lines.extend(f"- {item}" for item in items)
+
+
+def _indent_map(ideas: list[Idea], topic: str) -> list[str]:
+    """Create a relationship-first map with no more than five levels."""
+    branches: list[tuple[str, tuple[str, ...]]] = [
+        ("第一性原理", ("第一性原理",)),
+        ("系统与反馈", ("系统性思维",)),
+        ("可复核过程", ("过程思维",)),
+        ("失败与专家判断", ("反向思维", "默会知识")),
+        ("杠杆与效应", ("高杠杆思考",)),
+    ]
+    lines = [topic]
+    used: set[str] = set()
+    for branch, modes in branches:
+        selected = [idea for idea in ideas if idea.thinking_mode in modes][:7]
+        lines.append(f"  - [包含] {branch}")
+        if not selected:
+            lines.append("    - [行动] 待补充并验证")
+        for idea in selected:
+            used.add(idea.id)
+            lines.append(f"    - [{idea.relation_type}] {idea.title}{'【待验证】' if idea.confidence == '待验证' else ''}")
+            if idea.evidence or idea.source:
+                lines.append(f"      - [证据] {clean_text(idea.evidence or idea.source)[:90]}")
+            if idea.next_action:
+                lines.append(f"      - [行动] {idea.next_action[:90]}")
+    lines.append("  - [时序] 工具工作流")
+    for layer in TOOL_LAYERS:
+        count = sum(1 for idea in ideas if idea.tool_layer == layer)
+        lines.append(f"    - [包含] {layer}（{count}）")
+    lines.append("  - [行动] 下一步")
+    actions = [idea.next_action for idea in ideas if idea.next_action][:3]
+    for action in _items_or_pending(actions, "定义一个可验证的小步骤"):
+        lines.append(f"    - [行动] {action}")
+    return lines
+
+
+def filter_report_sections(
+    markdown: str,
+    excluded_sections: Iterable[int | str] | None = None,
+    excluded_lines: Iterable[str] | None = None,
+) -> str:
+    """Remove selected report sections or exact content lines from generated output."""
+    excluded: set[int] = set()
+    for value in excluded_sections or ():
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= number <= len(REPORT_SECTIONS):
+            excluded.add(number)
+    line_exclusions = {clean_text(value) for value in (excluded_lines or ()) if clean_text(value)}
+    if not excluded and not line_exclusions:
+        return markdown
+    output: list[str] = []
+    skipping = False
+    for line in markdown.splitlines(keepends=True):
+        heading = re.match(r"^##\s+(\d+)\.\s+", line)
+        if heading:
+            skipping = int(heading.group(1)) in excluded
+        if not skipping and clean_text(line) not in line_exclusions:
+            output.append(line)
+    return "".join(output).rstrip() + "\n"
+
+
 def framework_markdown(
     ideas: list[Idea],
     threshold: float = 0.18,
     name_overrides: dict[str, str] | None = None,
     assignments: dict[str, str] | None = None,
+    excluded_sections: Iterable[int | str] | None = None,
+    excluded_lines: Iterable[str] | None = None,
 ) -> str:
     components = cluster_ideas_with_assignments(ideas, threshold, assignments)
+    topic = _topic_title(ideas, name_overrides)
     lines = [
-        "# 想法与创新点逻辑框架",
+        f"# {topic}｜知识处理方案",
         "",
         f"- 生成时间：{now_iso()}",
-        f"- 历史想法数量：{len(ideas)}",
+        f"- 知识条目数量：{len(ideas)}",
         f"- 关联阈值：{threshold:.2f}",
-        "- 生成规则：每次新增后重新读取全部历史记录，重新检索相关内容，再重建逻辑树。",
+        "- 标注约定：假设、推论、未知问题及低置信度内容统一标记为“待验证”。",
         "",
-        "## 总览",
+        "## 1. 一句话核心结论",
         "",
     ]
-    if not components:
-        lines.append("- 暂无记录。请通过界面或命令行写入第一条想法。")
-        return "\n".join(lines) + "\n"
-    for index, component in enumerate(components, start=1):
-        kind = "关联主题" if len(component) > 1 else "独立树干"
-        lines.append(f"- 树干 {index}：{topic_name(component, name_overrides)}（{kind}，{len(component)} 条）")
-    for index, component in enumerate(components, start=1):
-        title = topic_name(component, name_overrides)
-        kind = "关联主题" if len(component) > 1 else "独立树干"
-        lines.extend(["", f"## 树干 {index}：{title}", "", f"- 类型：{kind}", f"- 关键词：{'、'.join(component_keywords(component)) or '暂无'}"])
-        for field_name in FIELD_ORDER:
-            entries = []
-            seen: set[str] = set()
-            for idea in component:
-                value = clean_text(getattr(idea, field_name))
-                if value and value not in seen:
-                    entries.append((value, idea.id))
-                    seen.add(value)
-            if entries:
-                lines.extend(["", f"### {SECTION_LABELS[field_name]}", ""])
-                lines.extend(f"- {value}（来源：{idea_id}）" for value, idea_id in entries)
-        lines.extend(["", "### 来源索引", ""])
-        for idea in sorted(component, key=lambda item: item.created_at):
-            tag_text = f"｜标签：{', '.join(idea.tags)}" if idea.tags else ""
-            lines.append(f"- {idea.id}｜{idea.created_at}｜{idea.title}{tag_text}")
-    return "\n".join(lines) + "\n"
+    conclusion = next((_idea_text(item) for item in reversed(ideas) if item.summary), "待验证：先定义主题、目标与可观察结果。")
+    lines.append(conclusion)
+
+    lines.extend(["", "## 2. 主题的系统边界", ""])
+    _append_bullets(lines, [
+        f"系统目标：把“{topic}”的临时信息转化为可追溯、可复用、可验证的知识。",
+        "系统边界：从原始捕捉开始，到形成永久笔记、关系图和下一步决策结束；真实实验执行与外部平台同步不在自动化边界内。",
+        f"输入：{len(ideas)} 条记录、来源、证据和人工判断；输出：15 段分析报告、Obsidian 笔记、OneNote 清单和 Mermaid 导图。",
+        "核心模块与依赖：第一性原理定义对象 → 系统思维连接变量 → 过程思维形成证据链 → 反向思维寻找反例 → 默会知识补足判断规则 → 高杠杆思考确定行动优先级。",
+        "正反馈：高质量永久笔记增加可链接证据，更多可靠链接又提高后续分析的复用效率。负反馈：反例、失败记录和强制检查点会降低错误结论的置信度。",
+        "时间延迟：原始记录不会立即成为永久知识，必须经过复盘、验证与关系确认。",
+        "限制条件：本工具只组织用户提供的信息，不会把未提供的领域知识伪装成事实。",
+        "风险传播：一个无来源的关键假设若被误标为事实，会沿因果、依赖和反馈关系传播到实验设计与技术决策。",
+        "高杠杆点：知识状态、证据/来源、判断标准和下一步动作四项完整度。",
+    ])
+
+    lines.extend(["", "## 3. 第一性原理拆解", "", "这些主干分别承担‘确认现实、提出解释、形成判断、复用经验、暴露缺口’五种不同决策功能，因此应成为导图主干，而不是沿用普通资料分类。", ""])
+    for knowledge_type in KNOWLEDGE_TYPES:
+        lines.append(f"### {knowledge_type}")
+        lines.append("")
+        selected = [_marked(item) for item in ideas if item.knowledge_type == knowledge_type]
+        _append_bullets(lines, _items_or_pending(selected))
+        lines.append("")
+    mechanisms = [_marked(item, item.mechanism) for item in ideas if item.mechanism]
+    lines.extend(["### 底层变量、机制与必要条件", ""])
+    _append_bullets(lines, _items_or_pending(mechanisms))
+
+    lines.extend(["", "## 4. 可检查的分析步骤", ""])
+    process_rows = [
+        ("问题定义", [_idea_text(item) for item in ideas if item.summary]),
+        ("已知信息", [_marked(item) for item in ideas if item.knowledge_type == "事实"]),
+        ("缺失信息", [_marked(item) for item in ideas if item.knowledge_type == "未知问题"]),
+        ("关键假设", [_marked(item) for item in ideas if item.knowledge_type == "假设"]),
+        ("分析步骤", [item.mechanism for item in ideas if item.thinking_mode == "过程思维" and item.mechanism]),
+        ("使用的证据", [f"{item.evidence or item.source}（{item.id}）" for item in ideas if item.evidence or item.source]),
+        ("判断标准", [item.validation for item in ideas if item.validation]),
+        ("不确定性", [_marked(item) for item in ideas if item.confidence in {"低", "待验证"}]),
+        ("最终结论", [item.innovation for item in ideas if item.knowledge_type == "推论" and item.innovation]),
+        ("下一步验证", [item.next_action or item.validation for item in ideas if item.next_action or item.validation]),
+    ]
+    for label, values in process_rows:
+        lines.append(f"- **{label}**：{'；'.join(_items_or_pending(values, '待验证'))}")
+
+    lines.extend(["", "## 5. 失败模式与预警信号", ""])
+    risk_ideas = [item for item in ideas if item.risk]
+    risks = [_marked(item, item.risk) for item in risk_ideas]
+    hypotheses = [item for item in ideas if item.knowledge_type == "假设"]
+    _append_bullets(lines, [
+        f"会导致失败：{'；'.join(_items_or_pending(risks, '待验证：尚未登记失败模式'))}",
+        f"相反假设：{'；'.join(_items_or_pending([f'“{item.title}”不成立或主因相反' for item in hypotheses], '待验证：尚未登记可证伪的相反假设'))}",
+        "看似正确却可能适得其反：过早整理、只收集不验证、用链接数量代替证据质量、让导图分类掩盖真实因果。",
+        f"难以及时发现的风险：{'；'.join(_items_or_pending([item.risk for item in risk_ideas if item.confidence in {'低', '待验证'}], '待验证：隐性混杂、时间延迟和选择性记录'))}",
+        "早期预警信号：待验证条目持续增加、来源为空、同一结论没有反例、下一步动作长期为空、导图关系无法用一句话解释。",
+    ])
+    lines.append("- 强制检查点：任何‘假设/推论’在升级为‘事实’前，必须补充来源或证据、判断标准和验证结果。")
+
+    lines.extend(["", "## 6. 专家默会知识", ""])
+    tacit = [_marked(item) for item in ideas if item.thinking_mode == "默会知识" or item.knowledge_type == "经验"]
+    tacit_text = "；".join(_items_or_pending(tacit, "待验证：尚未记录"))
+    _append_bullets(lines, [
+        f"论文/教材很少明说的经验：{tacit_text}",
+        "新手常见误区：把摘录当理解、把共现当因果、把美观导图当知识体系、忽略失败记录。",
+        f"专家优先观察的信号：{tacit_text}",
+        "继续/调整/放弃规则：证据支持且风险可控则继续；关键假设动摇则调整；核心机制被反例否定且无替代解释则停止。",
+        "异常现象的真实含义：先视为测量、边界条件或模型缺口的信号，不急于解释为新机制。【待验证】",
+        "经验适用与失效条件：每条经验必须注明对象、环境、时间尺度和例外；边界变化时重新验证。",
+    ])
+
+    lines.extend(["", "## 7. 第一序、第二序和第三序效应", ""])
+    first = [item.scene or item.mechanism for item in ideas if item.scene or item.mechanism]
+    second = [item.innovation for item in ideas if item.innovation and item.relation_type in {"因果", "反馈", "时序"}]
+    third = [item.risk for item in ideas if item.risk and item.thinking_mode == "高杠杆思考"]
+    lines.append(f"- 第一序（直接结果）：{'；'.join(_items_or_pending(first, '待验证'))}")
+    lines.append(f"- 第二序（后续结果）：{'；'.join(_items_or_pending(second, '待验证'))}")
+    lines.append(f"- 第三序（长期结构性影响）：{'；'.join(_items_or_pending(third, '待验证'))}")
+    gaps = [item.title for item in ideas if item.knowledge_type == "未知问题" or item.confidence == "待验证"]
+    lines.extend(["", "### 费曼检验", ""])
+    lines.append(f"- 一句话解释：{conclusion}")
+    lines.append("- 生活化类比：OneNote 像收件箱，Obsidian 像经过编目的工具柜，思维导图像标出工具如何配合的施工图。")
+    lines.append(f"- 难以解释的部分/理解缺口：{'；'.join(_items_or_pending(gaps, '待验证：尚未主动登记理解缺口'))}")
+
+    lines.extend(["", "## 8. OneNote原始记录清单", ""])
+    onenote = [_marked(item) for item in ideas if item.tool_layer == TOOL_LAYERS[0]]
+    _append_bullets(lines, _items_or_pending(onenote, "待捕捉：手写记录、组会/导师意见、截图、实验现象、临时想法、报错与未验证假设。"))
+
+    lines.extend(["", "## 9. Obsidian永久笔记清单", ""])
+    obsidian_items = [item for item in ideas if item.tool_layer == TOOL_LAYERS[1]] or ideas
+    _append_bullets(lines, _items_or_pending([f"[[{item.title}]]：{item.knowledge_type}／{item.thinking_mode}" for item in obsidian_items], "待沉淀：先把一条有来源的事实或可检验假设转为原子笔记。"))
+    lines.append(f"- 主题索引页（MOC）：[[MOC-{topic}]]")
+    lines.append("- Bases 建议：收录论文、数据集、实验、失败案例、判断规则与可复用流程，并按状态、置信度、来源和下一步筛选。")
+
+    lines.extend(["", "## 10. Obsidian属性字段建议", ""])
+    _append_bullets(lines, ["id", "type", "thinking_mode", "relation", "tool_layer", "status", "confidence", "source", "evidence", "tags", "created", "updated", "next_action", "links"])
+
+    lines.extend(["", "## 11. 推荐建立的双向链接", ""])
+    links = []
+    by_id = {item.id: item for item in ideas}
+    for item in ideas:
+        for target in item.links:
+            target_idea = by_id.get(target)
+            links.append(f"[[{item.title}]] → [[{target_idea.title if target_idea else target}]]（{item.relation_type}）")
+    if not links:
+        for component in components:
+            for left, right in zip(component, component[1:]):
+                links.append(f"[[{left.title}]] ↔ [[{right.title}]]（待验证：自动关联）")
+    _append_bullets(lines, _items_or_pending(links, "待验证：尚未指定笔记关系。"))
+
+    map_lines = _indent_map(ideas, topic)
+    lines.extend(["", "## 12. 缩进式思维导图", "", "```text", *map_lines, "```"])
+    lines.extend(["", "## 13. Mermaid思维导图代码", "", "```mermaid", mermaid_source(ideas, threshold, name_overrides, assignments).rstrip(), "```"])
+
+    lines.extend(["", "## 14. 三个最高杠杆的行动", ""])
+    actions = [item.next_action for item in ideas if item.next_action]
+    actions += [item.validation for item in ideas if item.validation and item.validation not in actions]
+    actions += ["为所有待验证条目补齐证据与判断标准", "每周把 OneNote 原始记录提炼为原子笔记", "只在导图中保留能影响判断的真实关系"]
+    _append_bullets(lines, [f"{index}. {action}" for index, action in enumerate(actions[:3], 1)])
+
+    lines.extend(["", "## 15. 一个最小可执行的下一步", ""])
+    next_step = next((item.next_action for item in ideas if item.next_action), "新增一条‘事实’记录，并填写来源、证据和它支持的判断。")
+    lines.append(f"- {next_step}")
+    return filter_report_sections("\n".join(lines) + "\n", excluded_sections, excluded_lines)
 
 
 def write_framework(
     ideas: list[Idea], path: Path = DEFAULT_MARKDOWN, threshold: float = 0.18,
     names: dict[str, str] | None = None, assignments: dict[str, str] | None = None,
+    excluded_sections: Iterable[int | str] | None = None,
+    excluded_lines: Iterable[str] | None = None,
 ) -> str:
-    content = framework_markdown(ideas, threshold, names, assignments)
+    content = framework_markdown(ideas, threshold, names, assignments, excluded_sections, excluded_lines)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return content
@@ -359,18 +614,38 @@ def mermaid_source(
     assignments: dict[str, str] | None = None,
 ) -> str:
     def label(value: str) -> str:
-        return re.sub(r'["\n\r]', " ", value)[:44]
-    lines = ["mindmap", "  root((想法逻辑框架))"]
-    for index, component in enumerate(cluster_ideas_with_assignments(ideas, threshold, assignments), 1):
-        trunk = f"T{index}"
-        lines.append(f"    {trunk}({label(topic_name(component, names))})")
-        for idea_index, idea in enumerate(component, 1):
-            node = f"{trunk}I{idea_index}"
-            lines.append(f"      {node}[{label(idea.title)}]")
-            for field, value in idea.field_items():
-                if field == "summary":
-                    continue
-                lines.append(f"        {node}{field}[{label(FIELD_LABELS[field] + '：' + value)}]")
+        return re.sub(r'["\n\r\[\](){}]', " ", clean_text(value))[:52]
+    topic = _topic_title(ideas, names)
+    lines = ["mindmap", f"  root(({label(topic)}))"]
+    branch_specs: list[tuple[str, tuple[str, ...]]] = [
+        ("[包含] 第一性原理", ("第一性原理",)),
+        ("[包含] 系统与反馈", ("系统性思维",)),
+        ("[包含] 可复核过程", ("过程思维",)),
+        ("[包含] 失败与专家判断", ("反向思维", "默会知识")),
+        ("[包含] 杠杆与效应", ("高杠杆思考",)),
+    ]
+    for branch_index, (branch, modes) in enumerate(branch_specs, 1):
+        branch_id = f"B{branch_index}"
+        lines.append(f"    {branch_id}({label(branch)})")
+        selected = [idea for idea in ideas if idea.thinking_mode in modes][:7]
+        if not selected:
+            lines.append(f"      {branch_id}P[行动 待补充并验证]")
+        for idea_index, idea in enumerate(selected, 1):
+            node = f"{branch_id}I{idea_index}"
+            pending = " 待验证" if idea.confidence == "待验证" else ""
+            lines.append(f"      {node}[{label('[' + idea.relation_type + '] ' + idea.title + pending)}]")
+            if idea.evidence or idea.source:
+                lines.append(f"        {node}E[{label('[证据] ' + (idea.evidence or idea.source))}]")
+            if idea.next_action:
+                lines.append(f"        {node}A[{label('[行动] ' + idea.next_action)}]")
+    lines.append("    TOOLS([时序] 工具工作流)")
+    for index, layer in enumerate(TOOL_LAYERS, 1):
+        count = sum(1 for idea in ideas if idea.tool_layer == layer)
+        lines.append(f"      L{index}[{label('[包含] ' + layer + ' ' + str(count))}]")
+    lines.append("    NEXT([行动] 下一步)")
+    actions = [idea.next_action for idea in ideas if idea.next_action][:3] or ["定义一个可验证的小步骤"]
+    for index, action in enumerate(actions, 1):
+        lines.append(f"      A{index}[{label('[行动] ' + action)}]")
     return "\n".join(lines) + "\n"
 
 
@@ -386,7 +661,15 @@ def visual_payload(
             "keywords": component_keywords(component, 5),
             "ideas": [{
                 "id": item.id, "title": item.title, "preview": item.preview(54),
-                "tags": item.tags, "fields": dict(item.field_items()),
+                "tags": item.tags,
+                "fields": {
+                    "知识状态": item.knowledge_type, "思维方式": item.thinking_mode,
+                    "关系": item.relation_type, "工具层": item.tool_layer,
+                    "置信度": item.confidence, **{FIELD_LABELS[key]: value for key, value in item.field_items()},
+                    **({"来源": item.source} if item.source else {}),
+                    **({"证据": item.evidence} if item.evidence else {}),
+                    **({"下一步": item.next_action} if item.next_action else {}),
+                },
             } for item in component],
         })
     return payload
@@ -398,11 +681,82 @@ def html_visual_export(
 ) -> str:
     data = json.dumps(visual_payload(ideas, threshold, names, assignments), ensure_ascii=False).replace("</", "<\\/")
     return f"""<!doctype html>
-<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>想法逻辑框架</title>
+<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>知识处理框架</title>
 <style>body{{margin:0;background:#f5f7fb;color:#172033;font:15px 'Microsoft YaHei',sans-serif}}header{{padding:22px 5%;background:#172033;color:white}}h1{{margin:0;font-size:24px}}#map{{padding:24px 5%;display:grid;gap:18px}}.topic{{background:#fff;border-left:5px solid #246bce;padding:16px;border-radius:8px;box-shadow:0 2px 8px #17203312}}.idea{{margin:12px 0 0 18px;padding:12px;border:1px solid #d8e1f0;border-radius:6px}}.meta{{color:#58708f;font-size:13px}}.fields{{margin:8px 0 0;padding-left:18px}}li{{margin:4px 0}}</style></head>
-<body><header><h1>想法与创新点逻辑框架</h1><div>共 {len(ideas)} 条想法，阈值 {threshold:.2f}</div></header><main id=\"map\"></main>
+<body><header><h1>{html.escape(_topic_title(ideas, names))}｜知识处理框架</h1><div>共 {len(ideas)} 条知识记录，阈值 {threshold:.2f}</div></header><main id=\"map\"></main>
 <script>const data={data}; const esc=s=>String(s).replace(/[&<>\"]/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','\\"':'&quot;'}}[c]));
-document.getElementById('map').innerHTML=data.map((t,i)=>`<section class=\"topic\"><h2>${{i+1}}. ${{esc(t.name)}}</h2><div class=\"meta\">${{esc(t.keywords.join('、'))}} · ${{t.ideas.length}} 条想法</div>${{t.ideas.map(x=>`<article class=\"idea\"><strong>${{esc(x.title)}}</strong><div>${{esc(x.preview)}}</div><ul class=\"fields\">${{Object.entries(x.fields).filter(([k])=>k!=='summary').map(([k,v])=>`<li>${{esc(k)}}：${{esc(v)}}</li>`).join('')}}</ul></article>`).join('')}}</section>`).join('');</script></body></html>"""
+document.getElementById('map').innerHTML=data.map((t,i)=>`<section class=\"topic\"><h2>${{i+1}}. ${{esc(t.name)}}</h2><div class=\"meta\">${{esc(t.keywords.join('、'))}} · ${{t.ideas.length}} 条记录</div>${{t.ideas.map(x=>`<article class=\"idea\"><strong>${{esc(x.title)}}</strong><div>${{esc(x.preview)}}</div><ul class=\"fields\">${{Object.entries(x.fields).map(([k,v])=>`<li><b>${{esc(k)}}</b>：${{esc(v)}}</li>`).join('')}}</ul></article>`).join('')}}</section>`).join('');</script></body></html>"""
+
+
+def safe_note_name(value: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*]', "-", clean_text(value)).strip(" .")
+    return cleaned[:90] or "未命名知识"
+
+
+def obsidian_note(idea: Idea, topic: str) -> str:
+    properties = {
+        "id": idea.id,
+        "type": idea.knowledge_type,
+        "thinking_mode": idea.thinking_mode,
+        "relation": idea.relation_type,
+        "tool_layer": idea.tool_layer,
+        "status": "待验证" if idea.confidence == "待验证" or idea.knowledge_type in {"假设", "推论", "未知问题"} else "已记录",
+        "confidence": idea.confidence,
+        "source": idea.source,
+        "tags": idea.tags,
+        "created": idea.created_at,
+        "updated": idea.updated_at or idea.created_at,
+        "next_action": idea.next_action,
+    }
+    lines = ["---"]
+    for key, value in properties.items():
+        if value in ("", []):
+            continue
+        lines.append(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+    lines.extend(["---", "", f"# {idea.title}", "", _idea_text(idea), "", "## 证据与来源", ""])
+    lines.append(idea.evidence or idea.source or "待验证：尚未补充证据或来源。")
+    lines.extend(["", "## 关系", "", f"- [[MOC-{topic}]]"])
+    lines.extend(f"- [[{target}]]（{idea.relation_type}）" for target in idea.links)
+    lines.extend(["", "## 判断与验证", "", f"- 验证标准：{idea.validation or '待验证'}", f"- 风险/反例：{idea.risk or '待验证'}", f"- 下一步：{idea.next_action or '待验证'}", ""])
+    return "\n".join(lines)
+
+
+def export_obsidian_vault(
+    ideas: list[Idea], destination: Path = DEFAULT_OBSIDIAN,
+    names: dict[str, str] | None = None,
+) -> list[Path]:
+    """Export atomic notes and a MOC without deleting existing user files."""
+    destination.mkdir(parents=True, exist_ok=True)
+    topic = safe_note_name(_topic_title(ideas, names))
+    written: list[Path] = []
+    note_names: dict[str, str] = {}
+    for idea in ideas:
+        note_name = safe_note_name(idea.title)
+        if note_name in note_names.values():
+            note_name = f"{note_name}-{idea.id[-6:]}"
+        note_names[idea.id] = note_name
+        path = destination / f"{note_name}.md"
+        path.write_text(obsidian_note(idea, topic), encoding="utf-8")
+        written.append(path)
+    moc = destination / f"MOC-{topic}.md"
+    moc_lines = [f"# MOC-{topic}", "", "## 知识条目", ""]
+    for idea in ideas:
+        moc_lines.append(f"- [[{note_names[idea.id]}]]｜{idea.knowledge_type}｜{idea.thinking_mode}｜{idea.confidence}")
+    moc_lines.extend(["", "## Bases 建议筛选", "", "- type、thinking_mode、confidence、source、next_action、tags", ""])
+    moc.write_text("\n".join(moc_lines), encoding="utf-8")
+    written.append(moc)
+    return written
+
+
+def onenote_capture_markdown(ideas: list[Idea], names: dict[str, str] | None = None) -> str:
+    topic = _topic_title(ideas, names)
+    lines = [f"# {topic}｜OneNote 原始捕捉清单", "", "以下内容保持原貌；每周复盘时再决定是否沉淀到 Obsidian。", ""]
+    selected = [idea for idea in ideas if idea.tool_layer == TOOL_LAYERS[0]]
+    for idea in selected:
+        lines.extend([f"- [ ] {idea.title}", f"  - 类型：{idea.knowledge_type}｜思维：{idea.thinking_mode}｜关系：{idea.relation_type}", f"  - 原文：{_idea_text(idea)}", f"  - 来源：{idea.source or '待补充'}", f"  - 下一步：{idea.next_action or '待判断'}"])
+    if not selected:
+        lines.append("- [ ] 捕捉一条手写记录、截图、实验现象、临时想法、报错或未验证假设。")
+    return "\n".join(lines) + "\n"
 
 
 def configure_console() -> None:
@@ -417,14 +771,18 @@ def configure_console() -> None:
 def command_add(args: argparse.Namespace) -> int:
     ideas = load_ideas(args.store)
     idea = new_idea(title=args.title, tags=args.tags, summary=args.summary, innovation=args.innovation,
-                    mechanism=args.mechanism, scene=args.scene, validation=args.validation, risk=args.risk)
+                    mechanism=args.mechanism, scene=args.scene, validation=args.validation, risk=args.risk,
+                    knowledge_type=args.knowledge_type, thinking_mode=args.thinking_mode,
+                    relation_type=args.relation_type, tool_layer=args.tool_layer,
+                    source=args.source, evidence=args.evidence, confidence=args.confidence,
+                    next_action=args.next_action, links=args.links)
     if not any(value for _, value in idea.field_items()):
         print("至少需要填写一项想法内容。", file=sys.stderr)
         return 2
     ideas.append(idea)
     save_ideas(ideas, args.store)
     meta = load_meta(args.meta)
-    write_framework(ideas, args.output, args.threshold, meta["trunk_names"], meta["idea_assignments"])
+    write_framework(ideas, args.output, args.threshold, meta["trunk_names"], meta["idea_assignments"], meta["excluded_report_sections"], meta["report_exclusions"])
     print(f"已写入：{idea.id}｜{idea.title}")
     print(f"框架已重建：{args.output}")
     return 0
@@ -447,8 +805,22 @@ def command_search(args: argparse.Namespace) -> int:
 
 def command_framework(args: argparse.Namespace) -> int:
     ideas, meta = load_ideas(args.store), load_meta(args.meta)
-    write_framework(ideas, args.output, args.threshold, meta["trunk_names"], meta["idea_assignments"])
+    write_framework(ideas, args.output, args.threshold, meta["trunk_names"], meta["idea_assignments"], meta["excluded_report_sections"], meta["report_exclusions"])
     print(f"已生成：{args.output}")
+    return 0
+
+
+def command_export(args: argparse.Namespace) -> int:
+    ideas, meta = load_ideas(args.store), load_meta(args.meta)
+    write_framework(ideas, args.output, args.threshold, meta["trunk_names"], meta["idea_assignments"], meta["excluded_report_sections"], meta["report_exclusions"])
+    mermaid_path = args.output.with_name("framework_visual.mmd")
+    html_path = args.output.with_name("framework_visual.html")
+    onenote_path = args.output.with_name("onenote_capture.md")
+    mermaid_path.write_text(mermaid_source(ideas, args.threshold, meta["trunk_names"], meta["idea_assignments"]), encoding="utf-8")
+    html_path.write_text(html_visual_export(ideas, args.threshold, meta["trunk_names"], meta["idea_assignments"]), encoding="utf-8")
+    onenote_path.write_text(onenote_capture_markdown(ideas, meta["trunk_names"]), encoding="utf-8")
+    notes = export_obsidian_vault(ideas, args.obsidian, meta["trunk_names"])
+    print(f"已导出报告、Mermaid、网页、OneNote 清单及 {len(notes)} 个 Obsidian 文件。")
     return 0
 
 
@@ -458,7 +830,7 @@ def command_ui(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="想法与创新点逻辑框架工具")
+    parser = argparse.ArgumentParser(description="OneNote + Obsidian + 思维导图知识处理工具")
     parser.add_argument("--store", type=Path, default=DEFAULT_STORE, help="想法 JSONL 文件")
     parser.add_argument("--output", type=Path, default=DEFAULT_MARKDOWN, help="Markdown 框架文件")
     parser.add_argument("--meta", type=Path, default=DEFAULT_META, help="主题设置文件")
@@ -469,6 +841,15 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--tags", default="")
     for field in FIELD_ORDER:
         add.add_argument(f"--{field}", default="", help=FIELD_LABELS[field])
+    add.add_argument("--knowledge-type", choices=KNOWLEDGE_TYPES, default="未知问题", help="事实/假设/推论/经验/未知问题")
+    add.add_argument("--thinking-mode", choices=THINKING_MODES, default="过程思维", help="本条记录使用的思维方式")
+    add.add_argument("--relation-type", choices=RELATION_TYPES, default="包含", help="与主题或链接目标的关系")
+    add.add_argument("--tool-layer", choices=TOOL_LAYERS, default=TOOL_LAYERS[0], help="当前工具层")
+    add.add_argument("--source", default="", help="来源")
+    add.add_argument("--evidence", default="", help="证据")
+    add.add_argument("--confidence", choices=CONFIDENCE_LEVELS, default="待验证", help="置信度")
+    add.add_argument("--next-action", default="", help="下一步验证或行动")
+    add.add_argument("--links", default="", help="关联条目 ID 或笔记名，逗号分隔")
     add.set_defaults(handler=command_add)
     listing = subparsers.add_parser("list", help="列出历史想法")
     listing.set_defaults(handler=command_list)
@@ -477,6 +858,9 @@ def build_parser() -> argparse.ArgumentParser:
     search.set_defaults(handler=command_search)
     framework = subparsers.add_parser("framework", help="重建 Markdown 框架")
     framework.set_defaults(handler=command_framework)
+    export = subparsers.add_parser("export", help="导出完整报告、OneNote、Obsidian、Mermaid 和网页")
+    export.add_argument("--obsidian", type=Path, default=DEFAULT_OBSIDIAN, help="Obsidian 导出目录")
+    export.set_defaults(handler=command_export)
     ui = subparsers.add_parser("ui", help="启动图形界面")
     ui.set_defaults(handler=command_ui)
     return parser
